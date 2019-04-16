@@ -1584,11 +1584,8 @@ class ParseHTMLTagsTest(ParseTestCase):
             print_(test[s:e], "->", t.asList())
             (expectedType, expectedEmpty, expectedBG, expectedFG) = next(resIter)
 
-            tType = t.getName()
-            #~ print tType,"==",expectedType,"?"
-            self.assertTrue(tType in "startBody endBody".split(), "parsed token of unknown type '%s'" % tType)
-            self.assertEqual(tType, expectedType, "expected token of type %s, got %s" % (expectedType, tType))
-            if tType == "startBody":
+            print_(t.dump())
+            if "startBody" in t:
                 self.assertEqual(bool(t.empty), expectedEmpty,
                                  "expected %s token, got %s" % (expectedEmpty and "empty" or "not empty",
                                                                 t.empty and "empty" or "not empty"))
@@ -1596,11 +1593,12 @@ class ParseHTMLTagsTest(ParseTestCase):
                                  "failed to match BGCOLOR, expected %s, got %s" % (expectedBG, t.bgcolor))
                 self.assertEqual(t.fgcolor, expectedFG,
                                  "failed to match FGCOLOR, expected %s, got %s" % (expectedFG, t.bgcolor))
-            elif tType == "endBody":
-                #~ print "end tag"
+            elif "endBody" in t:
+                print_("end tag")
                 pass
             else:
                 print_("BAD!!!")
+
 
 class UpcaseDowncaseUnicode(ParseTestCase):
     def runTest(self):
@@ -2346,7 +2344,7 @@ class WithAttributeParseActionTest(ParseTestCase):
         <a B="x">3</a>
         <a b="X">4</a>
         <a b="y">5</a>
-        <a class="boo">8</a>
+        <a class="boo">8</ a>
         """
         tagStart, tagEnd = makeHTMLTags("a")
 
@@ -2891,7 +2889,8 @@ class UnicodeExpressionTest(ParseTestCase):
 class SetNameTest(ParseTestCase):
     def runTest(self):
         from pyparsing import (oneOf,infixNotation,Word,nums,opAssoc,delimitedList,countedArray,
-            nestedExpr,makeHTMLTags,anyOpenTag,anyCloseTag,commonHTMLEntity,replaceHTMLEntity)
+            nestedExpr,makeHTMLTags,anyOpenTag,anyCloseTag,commonHTMLEntity,replaceHTMLEntity,
+            Forward,ZeroOrMore)
 
         a = oneOf("a b c")
         b = oneOf("d e f")
@@ -2904,6 +2903,8 @@ class SetNameTest(ParseTestCase):
                         [
                         (('?',':'),3,opAssoc.LEFT),
                         ])
+        recursive = Forward()
+        recursive <<= a + ZeroOrMore(b + recursive)
 
         tests = [
             a,
@@ -2913,6 +2914,7 @@ class SetNameTest(ParseTestCase):
             arith_expr.expr,
             arith_expr2,
             arith_expr2.expr,
+            recursive,
             delimitedList(Word(nums).setName("int")),
             countedArray(Word(nums).setName("int")),
             nestedExpr(),
@@ -2926,10 +2928,11 @@ class SetNameTest(ParseTestCase):
             a | b | c
             d | e | f
             {a | b | c | d | e | f}
-            Forward: ...
+            Forward: + | - term
             + | - term
-            Forward: ...
+            Forward: ?: term
             ?: term
+            Forward: {a | b | c [{d | e | f Forward: ...}]...}
             int [, int]...
             (len) int...
             nested () expression
@@ -3698,6 +3701,14 @@ class ParseResultsNamesInGroupWithDictTest(ParseTestCase):
         # U = list_num.parseString(test_string)
         # self.assertTrue("LIT_NUM" not in U.LIST.LIST_VALUES, "results name retained as sub in ungrouped named result")
 
+        a, aEnd = pp.makeHTMLTags('a')
+        attrs = a.parseString("<a href='blah'>")
+        print_(attrs.dump())
+        self.assertEqual(attrs.startA.href, 'blah')
+        self.assertEqual(attrs.asDict(), {'startA': {'href': 'blah', 'tag': 'a', 'empty': False},
+                                          'href': 'blah', 'tag': 'a', 'empty': False})
+
+
 class FollowedByTest(ParseTestCase):
     def runTest(self):
         import pyparsing as pp
@@ -3842,6 +3853,82 @@ class IndentedBlockTest(ParseTestCase):
         self.assertEqual(result.c.c1,     200, "invalid indented block result")
         self.assertEqual(result.c.c2.c21, 999, "invalid indented block result")
 
+
+class IndentedBlockScanTest(ParseTestCase):
+    def get_parser(self):
+        """
+        A valid statement is the word "block:", followed by an indent, followed by the letter A only, or another block
+        """
+        stack = [1]
+        block = pp.Forward()
+        body = pp.indentedBlock(pp.Literal('A') ^ block, indentStack=stack, indent=True)
+        block <<= pp.Literal('block:') + body
+        return block
+
+    def runTest(self):
+        from textwrap import dedent
+
+        # This input string is a perfect match for the parser, so a single match is found
+        p1 = self.get_parser()
+        r1 = list(p1.scanString(dedent("""\
+        block:
+            A
+        """)))
+        self.assertEqual(len(r1), 1)
+
+        # This input string is a perfect match for the parser, except for the letter B instead of A, so this will fail (and should)
+        p2 = self.get_parser()
+        r2 = list(p2.scanString(dedent("""\
+        block:
+            B
+        """)))
+        self.assertEqual(len(r2), 0)
+
+        # This input string contains both string A and string B, and it finds one match (as it should)
+        p3 = self.get_parser()
+        r3 = list(p3.scanString(dedent("""\
+        block:
+            A
+        block:
+            B
+        """)))
+        self.assertEqual(len(r3), 1)
+
+        # This input string contains both string A and string B, but in a different order.
+        p4 = self.get_parser()
+        r4 = list(p4.scanString(dedent("""\
+        block:
+            B
+        block:
+            A
+        """)))
+        self.assertEqual(len(r4), 1)
+
+        # This is the same as case 3, but with nesting
+        p5 = self.get_parser()
+        r5 = list(p5.scanString(dedent("""\
+        block:
+            block:
+                A
+        block:
+            block:
+                B
+        """)))
+        self.assertEqual(len(r5), 1)
+
+        # This is the same as case 4, but with nesting
+        p6 = self.get_parser()
+        r6 = list(p6.scanString(dedent("""\
+        block:
+            block:
+                B
+        block:
+            block:
+                A
+        """)))
+        self.assertEqual(len(r6), 1)
+
+
 class ParseResultsWithNameMatchFirst(ParseTestCase):
     def runTest(self):
         import pyparsing as pp
@@ -3854,6 +3941,20 @@ class ParseResultsWithNameMatchFirst(ParseTestCase):
         """)
         self.assertEqual(list(expr.parseString('not the bird')['rexp']), 'not the bird'.split())
         self.assertEqual(list(expr.parseString('the bird')['rexp']), 'the bird'.split())
+
+        # test compatibility mode, restoring pre-2.3.1 behavior
+        with AutoReset(pp.__compat__, "collect_all_And_tokens"):
+            pp.__compat__.collect_all_And_tokens = False
+            expr_a = pp.Literal('not') + pp.Literal('the') + pp.Literal('bird')
+            expr_b = pp.Literal('the') + pp.Literal('bird')
+            expr = (expr_a | expr_b)('rexp')
+            expr.runTests("""\
+                not the bird
+                the bird
+            """)
+            self.assertEqual(expr.parseString('not the bird')['rexp'], 'not')
+            self.assertEqual(expr.parseString('the bird')['rexp'], 'the')
+
 
 class ParseResultsWithNameOr(ParseTestCase):
     def runTest(self):
@@ -3868,12 +3969,30 @@ class ParseResultsWithNameOr(ParseTestCase):
         self.assertEqual(list(expr.parseString('not the bird')['rexp']), 'not the bird'.split())
         self.assertEqual(list(expr.parseString('the bird')['rexp']), 'the bird'.split())
 
+        expr = (expr_a | expr_b)('rexp')
+        expr.runTests("""\
+            not the bird
+            the bird
+        """)
+        self.assertEqual(list(expr.parseString('not the bird')['rexp']), 'not the bird'.split())
+        self.assertEqual(list(expr.parseString('the bird')['rexp']), 'the bird'.split())
+
+        # test compatibility mode, restoring pre-2.3.1 behavior
+        with AutoReset(pp.__compat__, "collect_all_And_tokens"):
+            pp.__compat__.collect_all_And_tokens = False
+            expr_a = pp.Literal('not') + pp.Literal('the') + pp.Literal('bird')
+            expr_b = pp.Literal('the') + pp.Literal('bird')
+            expr = (expr_a ^ expr_b)('rexp')
+            expr.runTests("""\
+                not the bird
+                the bird
+            """)
+            self.assertEqual(expr.parseString('not the bird')['rexp'], 'not')
+            self.assertEqual(expr.parseString('the bird')['rexp'], 'the')
+
+
 class EmptyDictDoesNotRaiseException(ParseTestCase):
     def runTest(self):
-        if not PY_3:
-            print('explain() not supported in Py2')
-            return
-
         import pyparsing as pp
 
         key = pp.Word(pp.alphas)
@@ -3889,28 +4008,39 @@ class EmptyDictDoesNotRaiseException(ParseTestCase):
         try:
             print_(key_value_dict.parseString("").dump())
         except pp.ParseException as pe:
+            exc = pe
+            if not hasattr(exc, '__traceback__'):
+                # Python 2 compatibility
+                etype, value, traceback = sys.exc_info()
+                exc.__traceback__ = traceback
             print_(pp.ParseException.explain(pe))
         else:
             self.assertTrue(False, "failed to raise exception when matching empty string")
 
 class ExplainExceptionTest(ParseTestCase):
     def runTest(self):
-        if not PY_3:
-            print('explain() not supported in Py2')
-            return
-
         import pyparsing as pp
 
         expr = pp.Word(pp.nums).setName("int") + pp.Word(pp.alphas).setName("word")
         try:
             expr.parseString("123 355")
         except pp.ParseException as pe:
+            exc = pe
+            if not hasattr(exc, '__traceback__'):
+                # Python 2 compatibility
+                etype, value, traceback = sys.exc_info()
+                exc.__traceback__ = traceback
             print_(pp.ParseException.explain(pe, depth=0))
 
         expr = pp.Word(pp.nums).setName("int") - pp.Word(pp.alphas).setName("word")
         try:
             expr.parseString("123 355 (test using ErrorStop)")
         except pp.ParseSyntaxException as pe:
+            exc = pe
+            if not hasattr(exc, '__traceback__'):
+                # Python 2 compatibility
+                etype, value, traceback = sys.exc_info()
+                exc.__traceback__ = traceback
             print_(pp.ParseException.explain(pe))
 
         integer = pp.Word(pp.nums).setName("int").addParseAction(lambda t: int(t[0]))
@@ -3928,8 +4058,17 @@ class ExplainExceptionTest(ParseTestCase):
         try:
             expr.parseString("123 0")
         except pp.ParseException as pe:
+            exc = pe
+            if not hasattr(exc, '__traceback__'):
+                # Python 2 compatibility
+                etype, value, traceback = sys.exc_info()
+                exc.__traceback__ = traceback
             print_(pp.ParseException.explain(pe))
         except Exception as exc:
+            if not hasattr(exc, '__traceback__'):
+                # Python 2 compatibility
+                etype, value, traceback = sys.exc_info()
+                exc.__traceback__ = traceback
             print_(pp.ParseException.explain(exc))
             raise
 
@@ -4188,6 +4327,10 @@ def makeTestSuiteTemp(classes):
     suite.addTests(cls() for cls in classes)
     return suite
 
+# runnable from setup.py using "python setup.py test -s unitTests.suite"
+suite = makeTestSuite()
+
+
 if __name__ == '__main__':
 
     testRunner = TextTestRunner()
@@ -4198,7 +4341,9 @@ if __name__ == '__main__':
         ]
 
     if not testclasses:
-        testRunner.run(makeTestSuite())
+        result = testRunner.run(suite)
     else:
         BUFFER_OUTPUT = False
-        testRunner.run(makeTestSuiteTemp(testclasses))
+        result = testRunner.run(makeTestSuiteTemp(testclasses))
+
+    exit(0 if result.wasSuccessful() else 1)
